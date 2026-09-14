@@ -1,0 +1,62 @@
+#include "kvlite/storage.h"
+#include "kvlite/net.h"
+
+#include <cstdint>
+#include <exception>
+#include <iostream>
+#include <string>
+
+namespace {
+
+struct Options {
+    uint16_t port = 6381;
+};
+
+Options parse_args(int argc, char** argv) {
+    Options options;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--port") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("--port requires a value");
+            }
+            int port = std::stoi(argv[++i]);
+            if (port < 0 || port > 65535) {
+                throw std::runtime_error("port out of range: " + std::to_string(port));
+            }
+            options.port = static_cast<uint16_t>(port);
+        } else if (arg == "--help" || arg == "-h") {
+            std::cout << "Usage: kvlite_server [--port PORT]\n"
+                    << "  --port PORT   listening port (default 6381)\n";
+            std::exit(0);
+        } else {
+            throw std::runtime_error("unknown arg: " + arg);
+        }
+    }
+    return options;
+}
+
+}
+
+int main(int argc, char** argv) {
+    Options options;
+    try {
+        options = parse_args(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1; 
+    }
+
+    try {
+        kvlite::Storage storage;
+        kvlite::Server server(options.port, storage);
+
+        std::cout << "kvlite_server listening on 0.0.0.0:" << options.port << "\n";
+        server.run();
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
+
+    return 0;
+}
