@@ -12,7 +12,9 @@
       "cppStandard": "c++20",
       "includePath": [
         "${workspaceFolder}/include",
-        "${workspaceFolder}/dependencies/asio/include"
+        "${workspaceFolder}/dependencies/asio/include",
+        "${workspaceFolder}/dependencies/googletest/googletest/include",
+        "${workspaceFolder}/dependencies/googletest/googlemock/include"
       ],
       "defines": [
         "_WIN32_WINNT=0x0601"

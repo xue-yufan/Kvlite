@@ -2,6 +2,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <shared_mutex>
 
 namespace kvlite {
 
@@ -14,6 +15,7 @@ public:
     bool del(const std::string& key);
 
 private:
+    mutable std::shared_mutex mutex_;
     std::unordered_map<std::string, std::string> data_;
 };
 

@@ -5,7 +5,6 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
-#include <mutex>
 
 namespace kvlite {
 
@@ -32,7 +31,6 @@ private:
     Storage& storage_;
     asio::io_context io_;
     tcp::acceptor acceptor_;
-    std::mutex mutex_;
 
     void handle_client(tcp::socket socket) {
         std::string buffer;
@@ -60,8 +58,6 @@ private:
     }
 
     Response dispatch_command(const std::vector<std::string>& cmd) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
         if (cmd.empty()) {
             return { Response::Type::Error, "ERR empty command" };
         }

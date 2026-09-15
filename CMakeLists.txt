@@ -9,6 +9,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# 源码含中文注释且为 UTF-8（无 BOM）：若按系统代码页(936)解析，
+# MSVC 会把注释结尾的中文字节与下一行"粘"在一起，吞掉一行代码并报 C4819。
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 find_package(Threads REQUIRED)
 find_package(asio REQUIRED)
 

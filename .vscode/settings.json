@@ -1,0 +1,5 @@
+{
+  // 强制使用 CMakePresets.json；默认的 auto 模式在识别失败时会退回 kit 模式，
+  // 并提示「没有为此 CMake 项目激活任何配置预设」
+  "cmake.useCMakePresets": "always"
+}
