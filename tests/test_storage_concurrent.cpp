@@ -125,7 +125,9 @@ TEST(StorageConcurrent, SameKeyContention) {
         });
     }
 
-    for (auto& t : threads) t.join();
+    for (auto& thread : threads) {
+        thread.join();
+    }
 
     auto value = storage.get("shared");
     ASSERT_TRUE(value.has_value());
