@@ -53,6 +53,7 @@ int main(int argc, char** argv) {
 
         std::cout << "kvlite_server listening on 0.0.0.0:" << options.port << "\n";
         server.run();
+        std::cout << "server stopped clearly";
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

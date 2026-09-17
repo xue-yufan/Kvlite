@@ -5,6 +5,7 @@ target_sources(kvlite_core
         storage/storage.cpp
         protocol/protocol.cpp
         net/net.cpp
+        thread/thread_pool.cpp
 )
 
 target_include_directories(kvlite_core
@@ -13,7 +14,7 @@ target_include_directories(kvlite_core
         $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(kvlite_core PUBLIC cxx_std_20)
+target_compile_features(kvlite_core PUBLIC cxx_std_23)
 
 target_link_libraries(kvlite_core
     PRIVATE

@@ -1,10 +1,42 @@
 #include "kvlite/net.h"
+#include "kvlite/thread_pool.h"
 
 #include <asio.hpp>
 
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <csignal>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#include <sys/time.h>
+#endif
+
+namespace {
+
+using asio::ip::tcp;
+
+void set_receive_timeout(tcp::socket& socket, int milliseconds) {
+    #if defined(_WIN32)
+        DWORD timeout = static_cast<DWORD>(milliseconds);
+        setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+    #else
+        struct timeval tv;
+        tv.tv_sec = milliseconds / 1000;
+        tv.tv_usec = (milliseconds % 1000) * 1000;
+        setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    #endif
+}
+
+std::size_t default_thread_count() {
+    auto n = std::thread::hardware_concurrency();
+    return n == 0 ? 4 : n; 
+}
+
+}
 
 namespace kvlite {
 
@@ -13,17 +45,60 @@ using asio::ip::tcp;
 class Server::Impl {
 public:
     Impl(uint16_t port, Storage& storage) 
-        :port_(port), storage_(storage), acceptor_(io_, tcp::endpoint(tcp::v4(), port)){
+        :port_(port), 
+        storage_(storage), 
+        pool_(default_thread_count()),
+        acceptor_(io_, tcp::endpoint(tcp::v4(), port)) {
     }
 
     void run() {
-        for (;;) {
+        // 1. 注册信号处理
+        asio::signal_set signals(io_, SIGINT, SIGTERM);
+        signals.async_wait([this](const asio::error_code& ec, int) {
+            if (!ec) {
+                shutdown_requested_ = true;
+                asio::error_code ignored;
+                // 唤醒阻塞的 accept
+                acceptor_.close(ignored);
+            }
+        });
+
+        // 2. 专用信号线程跑 io_context
+        std::thread signal_thread([this]() {
+            io_.run();
+        });
+
+        // 3. 主线程 accept 循环
+        while (!shutdown_requested_) {
             tcp::socket socket(io_);
-            acceptor_.accept(socket);
-            std::thread([this, s = std::move(socket)]() mutable {
+            asio::error_code ec;
+            acceptor_.accept(socket, ec);
+
+            if (ec) {
+                if (shutdown_requested_) {
+                    break;
+                }
+                // 其他错误，继续监听
+                continue;
+            }
+
+            pool_.enqueue([this, s = std::move(socket)]() mutable {
                 handle_client(std::move(s));
-            }).detach();
+            });
         }
+
+        // 4. 关闭连接池
+        std::cout << "shutting down, waiting for tasks...\n";
+
+        // 等待所有连接处理完
+        pool_.wait_idle();  
+        // 停止线程池，join 工作线程     
+        pool_.shutdown();        
+
+        io_.stop();
+        signal_thread.join();
+
+        std::cout << "shutdown complete\n";
     }
 
 private:
@@ -31,15 +106,29 @@ private:
     Storage& storage_;
     asio::io_context io_;
     tcp::acceptor acceptor_;
+    ThreadPool pool_;
+    std::atomic<bool> shutdown_requested_{false};
 
     void handle_client(tcp::socket socket) {
+        set_receive_timeout(socket, 1000);
+
         std::string buffer;
         char temp[4096];
 
         for (;;) {
-            asio::error_code error_code;
-            std::size_t bytes_read = socket.read_some(asio::buffer(temp), error_code);
-            if (error_code) {
+            // 检查停机标志，让空闲连接及时退出
+            if (shutdown_requested_) {
+                return;
+            }
+
+            asio::error_code ec;
+            std::size_t bytes_read = socket.read_some(asio::buffer(temp), ec);
+
+            if (ec == asio::error::would_block || ec == asio::error::try_again || ec == asio::error::timed_out) {
+                continue;
+            }
+
+            if (ec) {
                 return ;
             }
 
@@ -48,9 +137,9 @@ private:
             while (auto cmd = try_parse_command(buffer)) {
                 Response response = dispatch_command(*cmd);
                 std::string bytes = encode_response(response);
-                asio::error_code error_writer;
-                asio::write(socket, asio::buffer(bytes), error_writer);
-                if (error_writer) {
+                asio::error_code ew;
+                asio::write(socket, asio::buffer(bytes), ew);
+                if (ew) {
                     return ;
                 }
             }
@@ -102,8 +191,8 @@ void Server::run() {
 class Client::Impl {
 public:
     Impl(const std::string& host, uint16_t port)
-        : socket_(io_context_) {
-        tcp::resolver resolver(io_context_);
+        : socket_(io_) {
+        tcp::resolver resolver(io_);
         auto endpoints = resolver.resolve(host, std::to_string(port));
         asio::connect(socket_, endpoints);
     }
@@ -121,9 +210,9 @@ public:
                 return *response;
             }
 
-            asio::error_code error_code;
-            std::size_t bytes_read = socket_.read_some(asio::buffer(temp), error_code);
-            if (error_code) {
+            asio::error_code ec;
+            std::size_t bytes_read = socket_.read_some(asio::buffer(temp), ec);
+            if (ec) {
                 throw std::runtime_error("connection closed while reading response");
             }
             buffer.append(temp, bytes_read);
@@ -131,7 +220,7 @@ public:
     }
 
 private:
-    asio::io_context io_context_;
+    asio::io_context io_;
     tcp::socket socket_;
 };
 

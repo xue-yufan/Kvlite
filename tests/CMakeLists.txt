@@ -24,6 +24,7 @@ add_executable(kvlite_test
     test_storage.cpp
     test_protocol.cpp
     test_storage_concurrent.cpp
+    test_thread_pool.cpp
 )
 
 target_link_libraries(kvlite_test
