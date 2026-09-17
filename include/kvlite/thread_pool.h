@@ -11,9 +11,12 @@
 
 namespace kvlite {
 
+class Logger;
+
 class ThreadPool {
 public:
-    explicit ThreadPool(std::size_t num_threads);
+    // logger 可为 nullptr（不记录）。非空时由调用方持有，生命周期必须覆盖 ThreadPool
+    explicit ThreadPool(std::size_t num_threads, Logger* logger = nullptr);
     ~ThreadPool();
 
     ThreadPool(const ThreadPool&) = delete;
@@ -38,6 +41,7 @@ private:
     std::condition_variable idle_cv_;
     bool stopping_ = false;
     std::size_t active_tasks_ = 0;
+    Logger* logger_ = nullptr;
 
     void worker_loop();
 };

@@ -1,5 +1,6 @@
 #include "kvlite/storage.h"
 #include "kvlite/net.h"
+#include "kvlite/console_logger.h"
 
 #include <cstdint>
 #include <exception>
@@ -49,11 +50,11 @@ int main(int argc, char** argv) {
 
     try {
         kvlite::Storage storage;
-        kvlite::Server server(options.port, storage);
+        kvlite::ConsoleLogger logger;
+        kvlite::Server server(options.port, storage, logger);
 
-        std::cout << "kvlite_server listening on 0.0.0.0:" << options.port << "\n";
         server.run();
-        std::cout << "server stopped clearly";
+        logger.info("server stopped");
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;

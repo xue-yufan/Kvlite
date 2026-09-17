@@ -1,8 +1,10 @@
 #include "kvlite/net.h"
 #include "kvlite/thread_pool.h"
+#include "kvlite/logger.h"
 
 #include <asio.hpp>
 
+#include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
@@ -19,21 +21,32 @@ namespace {
 
 using asio::ip::tcp;
 
-void set_receive_timeout(tcp::socket& socket, int milliseconds) {
+// 设置接收超时，让空闲连接能周期性检查停机标志。失败返回 false
+bool set_receive_timeout(tcp::socket& socket, int milliseconds) {
     #if defined(_WIN32)
         DWORD timeout = static_cast<DWORD>(milliseconds);
-        setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        return setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == 0;
     #else
         struct timeval tv;
         tv.tv_sec = milliseconds / 1000;
         tv.tv_usec = (milliseconds % 1000) * 1000;
-        setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        return setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
     #endif
 }
 
 std::size_t default_thread_count() {
     auto n = std::thread::hardware_concurrency();
     return n == 0 ? 4 : n; 
+}
+
+// 取对端地址用于日志；拿不到时返回 "unknown"
+std::string peer_description(const tcp::socket& socket) {
+    asio::error_code ec;
+    auto endpoint = socket.remote_endpoint(ec);
+    if (ec) {
+        return "unknown";
+    }
+    return endpoint.address().to_string() + ":" + std::to_string(endpoint.port());
 }
 
 }
@@ -44,14 +57,19 @@ using asio::ip::tcp;
 
 class Server::Impl {
 public:
-    Impl(uint16_t port, Storage& storage) 
+    Impl(uint16_t port, Storage& storage, Logger& logger) 
         :port_(port), 
         storage_(storage), 
-        pool_(default_thread_count()),
-        acceptor_(io_, tcp::endpoint(tcp::v4(), port)) {
+        logger_(logger),
+        io_(),
+        acceptor_(io_, tcp::endpoint(tcp::v4(), port)),
+        pool_(default_thread_count(), &logger) {
     }
 
     void run() {
+        logger_.info("server listening on 0.0.0.0:" + std::to_string(port_)
+            + " with " + std::to_string(default_thread_count()) + " worker thread(s)");
+
         // 1. 注册信号处理
         asio::signal_set signals(io_, SIGINT, SIGTERM);
         signals.async_wait([this](const asio::error_code& ec, int) {
@@ -78,17 +96,28 @@ public:
                 if (shutdown_requested_) {
                     break;
                 }
-                // 其他错误，继续监听
+                // 其他错误，记录后继续监听
+                logger_.warning("accept failed: " + ec.message());
+                // fd 耗尽之类的持续错误会在这里空转烧 CPU，退让一下
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
 
-            pool_.enqueue([this, s = std::move(socket)]() mutable {
-                handle_client(std::move(s));
-            });
+            const std::string peer = peer_description(socket);
+            logger_.debug("accepted connection from " + peer);
+
+            try {
+                pool_.enqueue([this, s = std::move(socket)]() mutable {
+                    handle_client(std::move(s));
+                });
+            } catch (const std::exception& e) {
+                // 线程池已停机；丢弃这条连接，但不要让它无声消失
+                logger_.warning("dropping connection from " + peer + ": " + e.what());
+            }
         }
 
         // 4. 关闭连接池
-        std::cout << "shutting down, waiting for tasks...\n";
+        logger_.info("shutdown requested");
 
         // 等待所有连接处理完
         pool_.wait_idle();  
@@ -98,19 +127,24 @@ public:
         io_.stop();
         signal_thread.join();
 
-        std::cout << "shutdown complete\n";
+        logger_.info("shutdown complete");
     }
 
 private:
     uint16_t port_;
     Storage& storage_;
+    Logger& logger_;
     asio::io_context io_;
     tcp::acceptor acceptor_;
     ThreadPool pool_;
     std::atomic<bool> shutdown_requested_{false};
 
     void handle_client(tcp::socket socket) {
-        set_receive_timeout(socket, 1000);
+        const std::string peer = peer_description(socket);
+
+        if (!set_receive_timeout(socket, 1000)) {
+            logger_.warning("failed to set receive timeout for client " + peer);
+        }
 
         std::string buffer;
         char temp[4096];
@@ -129,17 +163,40 @@ private:
             }
 
             if (ec) {
+                if (ec == asio::error::eof) {
+                    logger_.debug("client " + peer + " closed the connection");
+                } else {
+                    logger_.warning("read from client " + peer + " failed: " + ec.message());
+                }
                 return ;
             }
 
             buffer.append(temp, bytes_read);
 
+            if (!is_command_prefix(buffer)) {
+                // 结构错误，回错误并断开
+                logger_.warning("protocol error");
+                asio::write(socket, asio::buffer(std::string("-ERR Protocol error\r\n")), ec);
+                return;
+            }
+
             while (auto cmd = try_parse_command(buffer)) {
+                const auto started_at = std::chrono::steady_clock::now();
                 Response response = dispatch_command(*cmd);
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started_at).count();
+
+                // 只记命令名，不记 key/value，避免日志被大 value 撑爆
+                logger_.debug("client " + peer + " ran " + (*cmd)[0] + " in " + std::to_string(elapsed) + "ms");
+                if (elapsed >= 100) {
+                    logger_.warning("slow command " + (*cmd)[0] + " from " + peer + " took " + std::to_string(elapsed) + "ms");
+                }
+
                 std::string bytes = encode_response(response);
                 asio::error_code ew;
                 asio::write(socket, asio::buffer(bytes), ew);
                 if (ew) {
+                    logger_.warning("write to client " + peer + " failed: " + ew.message());
                     return ;
                 }
             }
@@ -148,6 +205,7 @@ private:
 
     Response dispatch_command(const std::vector<std::string>& cmd) {
         if (cmd.empty()) {
+            logger_.warning("received an empty command");
             return { Response::Type::Error, "ERR empty command" };
         }
 
@@ -174,12 +232,19 @@ private:
             return response;
         }
 
+        // 把"命令不存在"和"参数个数不对"区分开，后者往往是客户端用法错误
+        if (cmd_name == "SET" || cmd_name == "GET" || cmd_name == "DEL") {
+            logger_.warning("wrong number of arguments for " + cmd_name + " (" + std::to_string(cmd.size() - 1) + " given)");
+        } else {
+            logger_.warning("unknown command '" + cmd_name + "'");
+        }
+
         return { Response::Type::Error, "ERR unknown command '" + cmd_name + "'" };
     }
 };
 
-Server::Server(uint16_t port, Storage& storage)
-    : impl_(std::make_unique<Impl>(port, storage)) {
+Server::Server(uint16_t port, Storage& storage, Logger& logger)
+    : impl_(std::make_unique<Impl>(port, storage, logger)) {
 }
 
 Server::~Server() = default;

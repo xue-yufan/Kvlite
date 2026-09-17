@@ -2,6 +2,18 @@
 
 namespace {
 
+enum class ParseStatus {
+    Complete,
+    Incomplete,
+    Malformed
+};
+
+struct ParseOutcome {
+    ParseStatus status;
+    std::vector<std::string> args;
+    std::size_t consumed = 0;
+};
+
 // 从 pos 开始找 "\r\n"，返回 '\r' 的位置；找不到返回 npos
 std::size_t find_crlf(const std::string& buf, std::size_t pos) {
     return buf.find("\r\n", pos);
@@ -21,6 +33,70 @@ std::optional<long long> parse_long(const std::string& buf, std::size_t start, s
         value = value * 10 + (c - '0');
     }
     return value;
+}
+
+ParseOutcome parse_command_internal(const std::string& buffer) {
+    if (buffer.empty()) {
+        return {ParseStatus::Incomplete};
+    }
+    if (buffer[0] != '*') {
+        return {ParseStatus::Malformed};
+    }
+
+    std::size_t pos = 0;
+
+    // 解析 *N
+    std::size_t crlf = find_crlf(buffer, pos);
+    if (crlf == std::string::npos) {
+        return {ParseStatus::Incomplete};
+    }
+
+    auto count = parse_long(buffer, pos + 1, crlf);
+    if (!count || *count < 0) {
+        return {ParseStatus::Malformed};
+    }
+
+    pos = crlf + 2;
+
+    std::vector<std::string> args;
+    args.reserve(static_cast<std::size_t>(*count));
+
+    for (long long i = 0; i < *count; ++i) {
+        // 每个元素必须以 '$' 开头
+        if (pos >= buffer.size()) {
+            return {ParseStatus::Incomplete};
+        }
+
+        if (buffer[pos] != '$') {
+            return {ParseStatus::Malformed};
+        }
+
+        std::size_t header_crlf = find_crlf(buffer, pos);
+        if (header_crlf == std::string::npos) {
+            return {ParseStatus::Incomplete};
+        }
+
+        auto len = parse_long(buffer, pos + 1, header_crlf);
+        if (!len || *len < 0) {
+            return {ParseStatus::Malformed};
+        }
+
+        pos = header_crlf + 2;
+
+        // 检查数据段和末尾的 \r\n 是否都在 buffer 里
+        auto len_sz = static_cast<std::size_t>(*len);
+        if (pos + len_sz + 2 > buffer.size()) {
+            return {ParseStatus::Incomplete};
+        }
+        if (buffer[pos + len_sz] != '\r' || buffer[pos + len_sz + 1] != '\n') {
+            return {ParseStatus::Malformed};
+        }
+
+        args.emplace_back(buffer, pos, len_sz);
+        pos += len_sz + 2;
+    }
+    
+    return {ParseStatus::Complete, std::move(args), pos};
 }
 
 }
@@ -66,63 +142,18 @@ std::string encode_response(const Response& response) {
 
 // 尝试从 buffer 中解析一条完整命令。数据不足返回 nullopt，不消耗 buffer
 std::optional<std::vector<std::string>> try_parse_command(std::string& buffer) {
-    if (buffer.empty()) {
+    auto r = parse_command_internal(buffer);
+    if (r.status != ParseStatus::Complete) {
         return std::nullopt;
     }
-    if (buffer[0] != '*') {
-        return std::nullopt;
-    }
+    buffer.erase(0, r.consumed);
+    return r.args;
+}
 
-    std::size_t pos = 0;
-
-    // 解析 *N
-    std::size_t crlf = find_crlf(buffer, pos);
-    if (crlf == std::string::npos) {
-        return std::nullopt;
-    }
-
-    auto count = parse_long(buffer, pos + 1, crlf);
-    if (!count || *count < 0) {
-        return std::nullopt;
-    }
-
-    pos = crlf + 2;
-
-    std::vector<std::string> args;
-    args.reserve(static_cast<std::size_t>(*count));
-
-    for (long long i = 0; i < *count; ++i) {
-        // 每个元素必须以 '$' 开头
-        if (pos >= buffer.size() || buffer[pos] != '$') {
-            return std::nullopt;
-        }
-
-        std::size_t header_crlf = find_crlf(buffer, pos);
-        if (header_crlf == std::string::npos) {
-            return std::nullopt;
-        }
-
-        auto len = parse_long(buffer, pos + 1, header_crlf);
-        if (!len || *len < 0) {
-            return std::nullopt;
-        }
-
-        pos = header_crlf + 2;
-
-        // 检查数据段和末尾的 \r\n 是否都在 buffer 里
-        auto len_sz = static_cast<std::size_t>(*len);
-        if (pos + len_sz + 2 > buffer.size()) {
-            return std::nullopt;
-        }
-        if (buffer[pos + len_sz] != '\r' || buffer[pos + len_sz + 1] != '\n') {
-            return std::nullopt;
-        }
-
-        args.emplace_back(buffer, pos, len_sz);
-        pos += len_sz + 2;
-    }
-    buffer.erase(0, pos);
-    return args;
+// 判断是否等待连接
+bool is_command_prefix(const std::string& buffer) {
+    auto r = parse_command_internal(buffer);
+    return r.status != ParseStatus::Malformed;
 }
 
 // 尝试从 buffer 中解析一个响应。数据不足返回 nullopt，不消耗 buffer

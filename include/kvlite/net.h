@@ -8,6 +8,7 @@
 
 #include <kvlite/protocol.h>
 #include <kvlite/storage.h>
+#include <kvlite/logger.h>
 
 #include <vector>
 #include <memory>
@@ -19,8 +20,8 @@ namespace kvlite {
 // 同步阻塞式 KV 服务器。构造函数创建监听 socket，run() 进入 accept 循环
 class Server {
 public:
-    // 创建监听 0.0.0.0:port 的服务器
-    Server(uint16_t port, Storage& storage); 
+    // 创建监听 0.0.0.0:port 的服务器。logger 由调用方持有，生命周期必须覆盖 Server
+    Server(uint16_t port, Storage& storage, Logger& logger);
     ~Server();
 
     // 禁止用另一个 Server 构造新对象

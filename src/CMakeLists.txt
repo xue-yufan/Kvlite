@@ -6,6 +6,8 @@ target_sources(kvlite_core
         protocol/protocol.cpp
         net/net.cpp
         thread/thread_pool.cpp
+        logger/console_logger.cpp
+        aof/aof.cpp
 )
 
 target_include_directories(kvlite_core
