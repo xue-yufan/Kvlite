@@ -1,3 +1,6 @@
 build/
 .vs/
 *.user
+
+# MSVC /analyze 生成的静态分析报告（构建产物，不应入库）
+*.nativecodeanalysis.xml
