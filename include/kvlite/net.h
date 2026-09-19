@@ -9,11 +9,12 @@
 #include <kvlite/protocol.h>
 #include <kvlite/storage.h>
 #include <kvlite/logger.h>
+#include <kvlite/aof.h>
 
-#include <vector>
-#include <memory>
 #include <cstdint>
-#include <iostream>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace kvlite {
 
@@ -21,7 +22,7 @@ namespace kvlite {
 class Server {
 public:
     // 创建监听 0.0.0.0:port 的服务器。logger 由调用方持有，生命周期必须覆盖 Server
-    Server(uint16_t port, Storage& storage, Logger& logger);
+    Server(uint16_t port, Storage& storage, Logger& logger, Aof& aof);
     ~Server();
 
     // 禁止用另一个 Server 构造新对象
@@ -58,7 +59,7 @@ public:
     
     Client& operator=(Client&&) = delete;
 
-    // 发送一条命令并等待响应
+    // 发送一条命令并等待响应。默认 5 秒不回应则抛 std::runtime_error（不会永久阻塞）
     Response execute(const std::vector<std::string>& command);
 
 private:

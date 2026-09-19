@@ -145,17 +145,8 @@ TEST(ThreadPool, TaskExceptionDoesNotCrashPool) {
         ++counter; 
     });
 
-    // 第一个任务抛异常，但不应该影响第二个任务
-    // 实际上，异常会让工作线程终止，v3 里没有捕获
-    // 所以这个测试验证的是"至少不会让整个进程崩溃"
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    // 注意：v3 的 worker_loop 没有 try/catch，
-    // 任务抛异常会导致 std::terminate。
-    // 这个测试如果跑通，说明有捕获机制；
-    // 如果崩溃，说明需要加 try/catch。
     pool.shutdown();
 }
-
 
 }

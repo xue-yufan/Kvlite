@@ -12,6 +12,7 @@ using kvlite::encode_command;
 using kvlite::encode_response;
 using kvlite::try_parse_command;
 using kvlite::try_parse_response;
+using kvlite::is_command_prefix;
 
 // encode_command
 TEST(EncodeCommand, Simple) {
@@ -158,6 +159,21 @@ TEST(ParseResponse, Incomplete) {
     auto response = try_parse_response(buffer);
     EXPECT_FALSE(response.has_value());
     EXPECT_EQ(buffer, "$3\r\nba");
+}
+
+TEST(Parse, OverflowNumberIsMalformed) {
+    std::string buf = "*99999999999999999999\r\n";
+    EXPECT_FALSE(is_command_prefix(buf));
+}
+
+TEST(ParseCommand, HugeCountIsMalformed) {
+    std::string buf = "*1000000000\r\n";
+    EXPECT_FALSE(is_command_prefix(buf));
+}
+
+TEST(ParseCommand, IsCommandPrefixDoesNotThrow) {
+    std::string buf = "*99999999999999999999\r\n";
+    EXPECT_NO_THROW(is_command_prefix(buf));
 }
 
 }

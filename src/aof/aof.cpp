@@ -2,6 +2,7 @@
 #include "kvlite/protocol.h"
 
 #include <stdexcept>
+#include <filesystem>
 
 namespace kvlite {
 
@@ -30,10 +31,25 @@ bool Aof::append(const std::vector<std::string>& command) {
 }
 
 std::size_t Aof::replay(const std::function<void(const std::vector<std::string>&)>& callback) {
+    std::error_code ec;
+    auto status = std::filesystem::status(path_, ec);
+
+    if (ec) {
+        throw std::runtime_error("cannot stat AOF file: " + ec.message());
+    }
+
+    if (status.type() == std::filesystem::file_type::not_found) {
+        // 文件不存在：首次启动，正常
+        return 0;   
+    }
+
+    if (!std::filesystem::is_regular_file(status)) {
+        throw std::runtime_error("AOF path is not a regular file: " + path_);
+    }
+
     std::ifstream in(path_, std::ios::binary); 
     if (!in) {
-        // 文件不存在或无法打开，则视为空 Aof
-        return 0;
+        throw std::runtime_error("failed to open AOF file for replay: " + path_);
     }
 
     std::string buffer;
@@ -52,7 +68,13 @@ std::size_t Aof::replay(const std::function<void(const std::vector<std::string>&
 
     // 若文件读完 buffer 还有残留，则说明最后命令不完整
     if (!buffer.empty()) {
-        throw std::runtime_error("AOF file corrupted: trailing bytes");
+        if (is_command_prefix(buffer)) {
+            // 尾部半条命令：崩溃留下的，正常丢弃
+            // v4 里先静默丢弃，v5 可以引入 ReplayReport 记入日志
+        } else {
+            // 真正的结构错误
+            throw std::runtime_error("AOF file corrupted: malformed command");
+        }
     }
 
     return count;

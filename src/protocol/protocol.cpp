@@ -1,6 +1,10 @@
 #include "kvlite/protocol.h"
 
+#include <climits>
+
 namespace {
+
+constexpr long long kMaxMultiBulkLen = 1024 * 1024;
 
 enum class ParseStatus {
     Complete,
@@ -19,7 +23,7 @@ std::size_t find_crlf(const std::string& buf, std::size_t pos) {
     return buf.find("\r\n", pos);
 }
 
-// 把 [start, end) 解析为非负整数。遇到非数字字符返回 nullopt
+// 把 [start, end) 解析为非负整数。遇到非数字字符或超出 long long 返回 nullopt
 std::optional<long long> parse_long(const std::string& buf, std::size_t start, std::size_t end) {
     if (start >= end) {
         return std::nullopt;
@@ -30,7 +34,14 @@ std::optional<long long> parse_long(const std::string& buf, std::size_t start, s
         if (c < '0' || c > '9') {
             return std::nullopt;
         }
-        value = value * 10 + (c - '0');
+
+        const int digit = c - '0';
+        // 检查 value * 10 + digit 是否会超过 LLONG_MAX。
+        // 只比较 LLONG_MAX / 10 不够：value 恰好等于它时，末位仍可能让结果越界。
+        if (value > (LLONG_MAX - digit) / 10) {
+            return std::nullopt;
+        }
+        value = value * 10 + digit;
     }
     return value;
 }
@@ -52,14 +63,20 @@ ParseOutcome parse_command_internal(const std::string& buffer) {
     }
 
     auto count = parse_long(buffer, pos + 1, crlf);
-    if (!count || *count < 0) {
+    // parse_long 只接受非负十进制数，溢出也已被拒，所以这里只需判 nullopt
+    if (!count) {
+        return {ParseStatus::Malformed};
+    }
+    if (*count > kMaxMultiBulkLen) {
         return {ParseStatus::Malformed};
     }
 
     pos = crlf + 2;
 
     std::vector<std::string> args;
-    args.reserve(static_cast<std::size_t>(*count));
+    // 每个元素最小 5 字节（$0\r\n\r\n），保守用 4
+    std::size_t hint = std::min(static_cast<std::size_t>(*count), buffer.size() / 4);
+    args.reserve(hint);
 
     for (long long i = 0; i < *count; ++i) {
         // 每个元素必须以 '$' 开头
@@ -77,7 +94,7 @@ ParseOutcome parse_command_internal(const std::string& buffer) {
         }
 
         auto len = parse_long(buffer, pos + 1, header_crlf);
-        if (!len || *len < 0) {
+        if (!len) {
             return {ParseStatus::Malformed};
         }
 
@@ -97,6 +114,10 @@ ParseOutcome parse_command_internal(const std::string& buffer) {
     }
     
     return {ParseStatus::Complete, std::move(args), pos};
+}
+
+bool contains_crlf(const std::string& s) {
+    return s.find("\r") != std::string::npos || s.find("\n") != std::string::npos;
 }
 
 }
@@ -127,8 +148,16 @@ std::string encode_command(const std::vector<std::string>& args) {
 std::string encode_response(const Response& response) {
     switch (response.type) {
         case Response::Type::Simple:
+            if (contains_crlf(response.value)) {
+                // Simple 不能含 CRLF，降级为 Bulk 保留内容
+                return "$" + std::to_string(response.value.size()) + "\r\n" + response.value + "\r\n";
+            }
             return "+" + response.value + "\r\n";
         case Response::Type::Error:
+            if (contains_crlf(response.value)) {
+                // Error 不能含 CRLF，用固定的错误信息替代
+                return "-ERR internal error\r\n";
+            }
             return "-" + response.value + "\r\n";
         case Response::Type::Integer:
             return ":" + std::to_string(response.integer) + "\r\n";
@@ -151,7 +180,7 @@ std::optional<std::vector<std::string>> try_parse_command(std::string& buffer) {
 }
 
 // 判断是否等待连接
-bool is_command_prefix(const std::string& buffer) {
+bool is_command_prefix(const std::string& buffer) noexcept {
     auto r = parse_command_internal(buffer);
     return r.status != ParseStatus::Malformed;
 }
@@ -204,7 +233,7 @@ std::optional<Response> try_parse_response(std::string& buffer) {
             }
 
             auto parse_len = parse_long(buffer, 1, crlf);
-            if (!parse_len || *parse_len < 0) {
+            if (!parse_len) {
                 return std::nullopt;
             }
 

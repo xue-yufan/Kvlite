@@ -8,9 +8,9 @@ namespace kvlite {
 
 class ConsoleLogger : public Logger {
 public:
-    explicit ConsoleLogger(Level min_level_ = Level::Info);
+    explicit ConsoleLogger(Level min_level = Level::Info);
 
-    void log(Level level, const std::string& meessage);
+    void log(Level level, const std::string& message);
 
 private:
     Level min_level_;

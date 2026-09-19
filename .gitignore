@@ -4,3 +4,8 @@ build/
 
 # MSVC /analyze 生成的静态分析报告（构建产物，不应入库）
 *.nativecodeanalysis.xml
+
+# AOF 运行期数据（服务启动后自己生成，不应入库）。
+# 锚定到仓库根目录，否则会连源码目录 src/aof/ 一起忽略掉。
+/aof/
+*.aof

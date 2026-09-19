@@ -2,9 +2,12 @@
 #include "kvlite/net.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
